@@ -3,8 +3,6 @@ package amrreader
 import (
 	"crypto/sha1"
 	"fmt"
-	"log"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -23,7 +21,15 @@ var hiddenIdList = []string{"__EVENTTARGET", "__EVENTARGUMENT", "__LASTFOCUS", "
 
 type Config struct {
 	BaseURL string
-	Host    string
+	Logger  bool
+}
+
+func (c Config) Hostname() string {
+	u, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return c.BaseURL
+	}
+	return u.Hostname()
 }
 
 type Credential struct {
@@ -72,8 +78,9 @@ type amrX struct {
 // GetProfileDaily
 // date is supported format "19/09/2024"
 func (a *amrX) GetProfileDaily(acc Account, date string) (ProfileMeter, error) {
+	logger := Logger{Enabled: a.Config.Logger}
 	loc, _ := time.LoadLocation(timex.TimeZoneAsiaBangkok)
-	//fmt.Println(date)
+
 	query := map[string]string{
 		"Custid":     acc.CustomerId,
 		"CustCode":   acc.CustomerCode,
@@ -107,7 +114,7 @@ func (a *amrX) GetProfileDaily(acc Account, date string) (ProfileMeter, error) {
 	// Parse html string to dom
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(data.Data)))
 	if err != nil {
-		log.Println("Error loading HTML:", err)
+		logger.Info("Error loading HTML:", "error", err.Error())
 		return ProfileMeter{}, err
 	}
 
@@ -150,12 +157,14 @@ func (a *amrX) GetProfileDaily(acc Account, date string) (ProfileMeter, error) {
 		}
 	})
 
-	slog.Info("GetProfileDaily", "date", date)
+	logger.Info("GetProfileDaily", "date", date)
 
 	return profileMeter, nil
 }
 
 func (a *amrX) Auth(config Credential) (Account, error) {
+	logger := Logger{Enabled: a.Config.Logger}
+
 	// Pre-Auth
 	custom := callx.Custom{
 		URL:    a.Config.BaseURL + "/Index.aspx",
@@ -170,7 +179,7 @@ func (a *amrX) Auth(config Credential) (Account, error) {
 			"Sec-Fetch-Mode":            "navigate",
 			"Sec-Fetch-User":            "?1",
 			"Sec-Fetch-Dest":            "document",
-			"host":                      a.Config.Host,
+			"host":                      a.Config.Hostname(),
 			"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
 		},
 	}
@@ -179,7 +188,7 @@ func (a *amrX) Auth(config Credential) (Account, error) {
 	// Parse html string to dom
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(preAuthRs.Data)))
 	if err != nil {
-		log.Fatal("Error loading HTML:", err)
+		logger.Fatal("Error loading HTML:", err)
 	}
 
 	// Post-Auth
@@ -207,33 +216,33 @@ func (a *amrX) Auth(config Credential) (Account, error) {
 	}
 	custom.Form = strings.NewReader(form.Encode())
 
-	slog.Info("Request:")
-	slog.Info(fmt.Sprintf("	POST -> %s", custom.URL))
-	slog.Info(fmt.Sprintf("	Header: %s", custom.Header))
-	slog.Info(fmt.Sprintf("	Form: %s", form.Encode()))
+	logger.Info("Request:")
+	logger.Info(fmt.Sprintf("	POST -> %s", custom.URL))
+	logger.Info(fmt.Sprintf("	Header: %s", custom.Header))
+	logger.Info(fmt.Sprintf("	Form: %s", form.Encode()))
 
 	postAuthRs := a.CallX.Req(custom)
 
-	slog.Info("Response:")
-	slog.Info(fmt.Sprintf("	Status %d %s", postAuthRs.Code, http.StatusText(postAuthRs.Code)))
-	slog.Info(fmt.Sprintf("	Cookie %s", custom.Header["Cookie"]))
+	logger.Info("Response:")
+	logger.Info(fmt.Sprintf("	Status %d %s", postAuthRs.Code, http.StatusText(postAuthRs.Code)))
+	logger.Info(fmt.Sprintf("	Cookie %s", custom.Header["Cookie"]))
 
 	if postAuthRs.Code == http.StatusFound {
 		mainCustCustom := callx.Custom{URL: a.Config.BaseURL + "/MainCust.aspx", Method: http.MethodGet, Header: custom.Header}
 
-		slog.Info("Request:")
-		slog.Info(fmt.Sprintf("	GET -> %s", mainCustCustom.URL))
-		slog.Info(fmt.Sprintf("	Header: %s", mainCustCustom.Header))
+		logger.Info("Request:")
+		logger.Info(fmt.Sprintf("	GET -> %s", mainCustCustom.URL))
+		logger.Info(fmt.Sprintf("	Header: %s", mainCustCustom.Header))
 
 		mainCustRs := a.CallX.Req(mainCustCustom)
 
-		slog.Info("Response:")
-		slog.Info(fmt.Sprintf("	Status %d %s", mainCustRs.Code, http.StatusText(mainCustRs.Code)))
+		logger.Info("Response:")
+		logger.Info(fmt.Sprintf("	Status %d %s", mainCustRs.Code, http.StatusText(mainCustRs.Code)))
 
 		// Parse html string to dom
 		docCust, errCust := goquery.NewDocumentFromReader(strings.NewReader(string(mainCustRs.Data)))
 		if errCust != nil {
-			log.Fatal("Error loading HTML:", errCust)
+			logger.Fatal("Error loading HTML:", errCust)
 		}
 
 		custUrl, exists := docCust.Find("#frmMain").Attr("src")
@@ -244,20 +253,20 @@ func (a *amrX) Auth(config Credential) (Account, error) {
 			meterNo := queryParams.Get("PeaNo")
 			custDashboardCustom := callx.Custom{URL: custUrl, Method: http.MethodGet, Header: custom.Header}
 
-			slog.Info("Request:")
-			slog.Info(fmt.Sprintf("	GET -> %s", custDashboardCustom.URL))
-			slog.Info(fmt.Sprintf("	Header: %s", custDashboardCustom.Header))
+			logger.Info("Request:")
+			logger.Info(fmt.Sprintf("	GET -> %s", custDashboardCustom.URL))
+			logger.Info(fmt.Sprintf("	Header: %s", custDashboardCustom.Header))
 
 			// Get meter no and meter point
 			custDashboardRs := a.CallX.Req(custDashboardCustom)
 
-			slog.Info("Response:")
-			slog.Info(fmt.Sprintf("	Status %d %s", mainCustRs.Code, http.StatusText(mainCustRs.Code)))
+			logger.Info("Response:")
+			logger.Info(fmt.Sprintf("	Status %d %s", mainCustRs.Code, http.StatusText(mainCustRs.Code)))
 
 			// Parse html string to dom
 			docDash, errDash := goquery.NewDocumentFromReader(strings.NewReader(string(custDashboardRs.Data)))
 			if errDash != nil {
-				log.Fatal("Error loading HTML:", errCust)
+				logger.Fatal("Error loading HTML:", errCust)
 			}
 
 			meterPoint := docDash.Find("select#ddlMeter option[selected]").AttrOr("value", "")
@@ -274,16 +283,16 @@ func (a *amrX) Auth(config Credential) (Account, error) {
 				MeterPoint:   meterPoint,
 			}, nil
 		} else {
-			slog.Error("Id frmMain not found")
+			logger.Error("Id frmMain not found")
 		}
 	} else {
-		slog.Error("Auth error")
+		logger.Error("Auth error")
 	}
 
 	// reset session
 	a.session = callx.Header{}
 
-	return Account{}, errors.New(string(preAuthRs.Data))
+	return Account{}, errors.New("ไม่สามารถเข้าสู่ระบบได้: รหัสผ่านใกล้หมดอายุหรือหมดอายุแล้ว")
 }
 
 func New(config Config, callX callx.CallX) AmrX {
