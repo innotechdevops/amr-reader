@@ -64,21 +64,28 @@ type ProfileMeter struct {
 	Profile      []Profile `json:"profile"`
 }
 
+type Session struct {
+	Header   callx.Header
+	Username string
+	Status   string
+}
+
 type AmrX interface {
-	Auth(config Credential) (Account, error)
-	GetProfileDaily(acc Account, date string) (ProfileMeter, error)
+	Auth(config Credential) (*Session, error)
+	GetAccount(session Session) (*Account, error)
+	GetProfileDaily(acc Account, date string) (*ProfileMeter, error)
 }
 
 type amrX struct {
 	Config  Config
 	CallX   callx.CallX
 	session callx.Header
+	logger  Logger
 }
 
 // GetProfileDaily
 // date is supported format "19/09/2024"
-func (a *amrX) GetProfileDaily(acc Account, date string) (ProfileMeter, error) {
-	logger := Logger{Enabled: a.Config.Logger}
+func (a *amrX) GetProfileDaily(acc Account, date string) (*ProfileMeter, error) {
 	loc, _ := time.LoadLocation(timex.TimeZoneAsiaBangkok)
 
 	query := map[string]string{
@@ -114,8 +121,8 @@ func (a *amrX) GetProfileDaily(acc Account, date string) (ProfileMeter, error) {
 	// Parse html string to dom
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(data.Data)))
 	if err != nil {
-		logger.Info("Error loading HTML:", "error", err.Error())
-		return ProfileMeter{}, err
+		a.logger.Info("Error loading HTML:", "error", err.Error())
+		return nil, err
 	}
 
 	divTable := doc.Find("#divTable")
@@ -157,14 +164,12 @@ func (a *amrX) GetProfileDaily(acc Account, date string) (ProfileMeter, error) {
 		}
 	})
 
-	logger.Info("GetProfileDaily", "date", date)
+	a.logger.Info("GetProfileDaily", "date", date)
 
-	return profileMeter, nil
+	return &profileMeter, nil
 }
 
-func (a *amrX) Auth(config Credential) (Account, error) {
-	logger := Logger{Enabled: a.Config.Logger}
-
+func (a *amrX) Auth(config Credential) (*Session, error) {
 	// Pre-Auth
 	custom := callx.Custom{
 		URL:    a.Config.BaseURL + "/Index.aspx",
@@ -183,12 +188,20 @@ func (a *amrX) Auth(config Credential) (Account, error) {
 			"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
 		},
 	}
+
+	a.logger.Info("Pre-Auth:")
+	a.logger.Info("> Request:")
+	a.logger.Info(fmt.Sprintf("	POST -> %s", custom.URL))
+
 	preAuthRs := a.CallX.Req(custom)
+
+	a.logger.Info("> Response:")
+	a.logger.Info(fmt.Sprintf("	Cookie %s", preAuthRs.Cookies))
 
 	// Parse html string to dom
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(preAuthRs.Data)))
 	if err != nil {
-		logger.Fatal("Error loading HTML:", err)
+		a.logger.Fatal("Error loading HTML:", err)
 	}
 
 	// Post-Auth
@@ -198,6 +211,11 @@ func (a *amrX) Auth(config Credential) (Account, error) {
 		"txtPassword": {config.Password},
 		"ddlLanguage": {"th-TH"},
 	}
+
+	a.logger.Info("Auth:")
+	a.logger.Info("> Request:")
+	a.logger.Info(fmt.Sprintf("	Header: %s", custom.Header))
+	a.logger.Info(fmt.Sprintf("	Form: %s", form.Encode()))
 
 	// Hidden input
 	for _, id := range hiddenIdList {
@@ -216,83 +234,93 @@ func (a *amrX) Auth(config Credential) (Account, error) {
 	}
 	custom.Form = strings.NewReader(form.Encode())
 
-	logger.Info("Request:")
-	logger.Info(fmt.Sprintf("	POST -> %s", custom.URL))
-	logger.Info(fmt.Sprintf("	Header: %s", custom.Header))
-	logger.Info(fmt.Sprintf("	Form: %s", form.Encode()))
+	a.logger.Info("Post-Auth:")
+	a.logger.Info("> Request:")
+	a.logger.Info(fmt.Sprintf("	POST -> %s", custom.URL))
+	a.logger.Info(fmt.Sprintf("	Header: %s", custom.Header))
+	a.logger.Info(fmt.Sprintf("	Form: %s", form.Encode()))
 
 	postAuthRs := a.CallX.Req(custom)
 
-	logger.Info("Response:")
-	logger.Info(fmt.Sprintf("	Status %d %s", postAuthRs.Code, http.StatusText(postAuthRs.Code)))
-	logger.Info(fmt.Sprintf("	Cookie %s", custom.Header["Cookie"]))
+	a.logger.Info("> Response:")
+	a.logger.Info(fmt.Sprintf("	Status %d %s", postAuthRs.Code, http.StatusText(postAuthRs.Code)))
+	a.logger.Info(fmt.Sprintf("	Cookie %s", custom.Header["Cookie"]))
 
 	if postAuthRs.Code == http.StatusFound {
-		mainCustCustom := callx.Custom{URL: a.Config.BaseURL + "/MainCust.aspx", Method: http.MethodGet, Header: custom.Header}
-
-		logger.Info("Request:")
-		logger.Info(fmt.Sprintf("	GET -> %s", mainCustCustom.URL))
-		logger.Info(fmt.Sprintf("	Header: %s", mainCustCustom.Header))
-
-		mainCustRs := a.CallX.Req(mainCustCustom)
-
-		logger.Info("Response:")
-		logger.Info(fmt.Sprintf("	Status %d %s", mainCustRs.Code, http.StatusText(mainCustRs.Code)))
-
-		// Parse html string to dom
-		docCust, errCust := goquery.NewDocumentFromReader(strings.NewReader(string(mainCustRs.Data)))
-		if errCust != nil {
-			logger.Fatal("Error loading HTML:", errCust)
-		}
-
-		custUrl, exists := docCust.Find("#frmMain").Attr("src")
-		if exists {
-			custUrl = strings.ReplaceAll(custUrl, "./", a.Config.BaseURL+"/")
-			queryParams := core.Query(custUrl)
-			custID := queryParams.Get("Custid")
-			meterNo := queryParams.Get("PeaNo")
-			custDashboardCustom := callx.Custom{URL: custUrl, Method: http.MethodGet, Header: custom.Header}
-
-			logger.Info("Request:")
-			logger.Info(fmt.Sprintf("	GET -> %s", custDashboardCustom.URL))
-			logger.Info(fmt.Sprintf("	Header: %s", custDashboardCustom.Header))
-
-			// Get meter no and meter point
-			custDashboardRs := a.CallX.Req(custDashboardCustom)
-
-			logger.Info("Response:")
-			logger.Info(fmt.Sprintf("	Status %d %s", mainCustRs.Code, http.StatusText(mainCustRs.Code)))
-
-			// Parse html string to dom
-			docDash, errDash := goquery.NewDocumentFromReader(strings.NewReader(string(custDashboardRs.Data)))
-			if errDash != nil {
-				logger.Fatal("Error loading HTML:", errCust)
-			}
-
-			meterPoint := docDash.Find("select#ddlMeter option[selected]").AttrOr("value", "")
-			meterNo = docDash.Find("select#ddlMeter option[selected]").Text()
-
-			// reset session
-			a.session = custom.Header
-
-			return Account{
-				Header:       custom.Header,
-				CustomerId:   custID,
-				CustomerCode: config.Username,
-				MeterNo:      meterNo,
-				MeterPoint:   meterPoint,
-			}, nil
-		} else {
-			logger.Error("Id frmMain not found")
-		}
+		return &Session{Header: custom.Header, Username: config.Username}, nil
 	} else {
-		logger.Error("Auth error")
+		a.logger.Error("Auth failure")
 	}
 
 	// reset session
 	a.session = callx.Header{}
 
-	return Account{}, errors.New("ไม่สามารถเข้าสู่ระบบได้: รหัสผ่านใกล้หมดอายุหรือหมดอายุแล้ว")
+	return nil, errors.New("ไม่สามารถเข้าสู่ระบบได้: รหัสผ่านใกล้หมดอายุหรือหมดอายุแล้ว")
+}
+
+func (a *amrX) GetAccount(session Session) (*Account, error) {
+	mainCustCustom := callx.Custom{URL: a.Config.BaseURL + "/MainCust.aspx", Method: http.MethodGet, Header: session.Header}
+
+	a.logger.Info("Main Customer:")
+	a.logger.Info("> Request:")
+	a.logger.Info(fmt.Sprintf("	GET -> %s", mainCustCustom.URL))
+	a.logger.Info(fmt.Sprintf("	Header: %s", mainCustCustom.Header))
+
+	mainCustRs := a.CallX.Req(mainCustCustom)
+	mainCustHtml := string(mainCustRs.Data)
+
+	a.logger.Info("> Response:")
+	a.logger.Info(fmt.Sprintf("	Status %d %s", mainCustRs.Code, http.StatusText(mainCustRs.Code)))
+
+	// Parse html string to dom
+	docCust, errCust := goquery.NewDocumentFromReader(strings.NewReader(mainCustHtml))
+	if errCust != nil {
+		a.logger.Fatal("Error loading HTML:", errCust)
+	}
+
+	/// Get url from iframe: <iframe id="frmMain" name="frmMain" src="..."
+	custUrl, exists := docCust.Find("#frmMain").Attr("src")
+	if exists {
+		custUrl = strings.ReplaceAll(custUrl, "./", a.Config.BaseURL+"/")
+		queryParams := core.Query(custUrl)
+		custID := queryParams.Get("Custid")
+		meterNo := queryParams.Get("PeaNo")
+		custDashboardCustom := callx.Custom{URL: custUrl, Method: http.MethodGet, Header: session.Header}
+
+		a.logger.Info("Customer Dashboard Custom:")
+		a.logger.Info("> Request:")
+		a.logger.Info(fmt.Sprintf("	GET -> %s", custDashboardCustom.URL))
+		a.logger.Info(fmt.Sprintf("	Header: %s", custDashboardCustom.Header))
+
+		// Get meter no and meter point
+		custDashboardRs := a.CallX.Req(custDashboardCustom)
+
+		a.logger.Info("> Response:")
+		a.logger.Info(fmt.Sprintf("	Status %d %s", mainCustRs.Code, http.StatusText(mainCustRs.Code)))
+
+		// Parse html string to dom
+		docDash, errDash := goquery.NewDocumentFromReader(strings.NewReader(string(custDashboardRs.Data)))
+		if errDash != nil {
+			a.logger.Fatal("Error loading HTML:", errCust)
+		}
+
+		meterPoint := docDash.Find("select#ddlMeter option[selected]").AttrOr("value", "")
+		meterNo = docDash.Find("select#ddlMeter option[selected]").Text()
+
+		// reset session
+		a.session = session.Header
+
+		return &Account{
+			Header:       session.Header,
+			CustomerId:   custID,
+			CustomerCode: session.Username,
+			MeterNo:      meterNo,
+			MeterPoint:   meterPoint,
+		}, nil
+	} else {
+		a.logger.Error("Id frmMain not found")
+	}
+	return nil, errors.New("cannot get customer information")
 }
 
 func New(config Config, callX callx.CallX) AmrX {
@@ -300,5 +328,6 @@ func New(config Config, callX callx.CallX) AmrX {
 		Config:  config,
 		CallX:   callX,
 		session: callx.Header{},
+		logger:  Logger{Enabled: config.Logger},
 	}
 }
