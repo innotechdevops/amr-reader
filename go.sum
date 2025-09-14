@@ -9,6 +9,8 @@ github.com/goccy/go-json v0.10.5/go.mod h1:oq7eo15ShAhp70Anwd5lgX2pLfOS3QCiwU/PU
 github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
 github.com/innotechdevops/core v1.0.5 h1:nwrqaRRcWBrFKkNcHLOQFTyB5EMPwNhbKI7G7AWIujE=
 github.com/innotechdevops/core v1.0.5/go.mod h1:1u8fOjQGDsj1+75KIWqJG422wo2N5JopLvOSY8CG9ZA=
+github.com/innotechdevops/core v1.0.6 h1:S3X6NEu6s6YltYSeniwAJKP8YJ6MT94KdNXqSd85WQU=
+github.com/innotechdevops/core v1.0.6/go.mod h1:1u8fOjQGDsj1+75KIWqJG422wo2N5JopLvOSY8CG9ZA=
 github.com/innotechdevops/timex v1.0.1 h1:cYImX+FJFCOHWCA1n0MAPSIcr6VY0fCXEvQc/82ZP2o=
 github.com/innotechdevops/timex v1.0.1/go.mod h1:wSGpjx50wv1PEmKGICDoPk7+g+RGjPoTz5+nUBCAVZI=
 github.com/jinzhu/now v1.1.5 h1:/o9tlHleP7gOFmsnYNz3RGnqzefHA47wQpKrrdTIwXQ=
