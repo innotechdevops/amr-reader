@@ -79,7 +79,7 @@ type AmrX interface {
 	Auth(config Credential) (*Session, error)
 	GetAccount(session Session) (*Account, error)
 	GetProfileDaily(acc Account, date string) (*ProfileMeter, error)
-	PasswordRotation(config PasswordRotationCredential, header *map[string]string) error
+	PasswordRotation(config PasswordRotationCredential, header *map[string]string) (*Session, error)
 }
 
 type amrX struct {
@@ -89,8 +89,24 @@ type amrX struct {
 	logger  Logger
 }
 
-func (a *amrX) PasswordRotation(config PasswordRotationCredential, header *map[string]string) error {
-	//TODO implement me
+func Header(hostname string) callx.Header {
+	return callx.Header{
+		"sec-ch-ua":                 "\"Chromium\";v=\"128\", \"Not;A=Brand\";v=\"24\", \"Google Chrome\";v=\"128\"",
+		"sec-ch-ua-mobile":          "?0",
+		"sec-ch-ua-platform":        "\"macOS\"",
+		"Upgrade-Insecure-Requests": "1",
+		"User-Agent":                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+		"Sec-Fetch-Site":            "same-origin",
+		"Sec-Fetch-Mode":            "navigate",
+		"Sec-Fetch-User":            "?1",
+		"Sec-Fetch-Dest":            "document",
+		"host":                      hostname,
+		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+	}
+}
+
+func (a *amrX) PasswordRotation(config PasswordRotationCredential, header *map[string]string) (*Session, error) {
+	var session *Session
 	var account *Account
 	if header != nil {
 		acc, err := a.GetAccount(Session{
@@ -98,24 +114,81 @@ func (a *amrX) PasswordRotation(config PasswordRotationCredential, header *map[s
 			Username: config.Username,
 		})
 		if err != nil {
-			session, err := a.Auth(Credential{
+			sess, err := a.Auth(Credential{
 				Username: config.Username,
 				Password: config.OldPassword,
 			})
 			if err != nil {
-				return err
+				return nil, err
 			}
-			account, err = a.GetAccount(*session)
+			session = sess
+			acc, err = a.GetAccount(*sess)
 			if err != nil {
-				return err
+				return nil, err
 			}
+			account = acc
+		} else {
+			account = acc
 		}
-		account = acc
 	}
 
 	fmt.Println(account)
 
-	return errors.New("implement me")
+	// Pre-Change Password
+	query := map[string]string{
+		"Custid":   account.CustomerId,
+		"CustCode": account.CustomerCode,
+	}
+	custom := callx.Custom{
+		URL:    a.Config.BaseURL + "/ChgPassword.aspx?" + core.ToQuery(query),
+		Method: http.MethodGet,
+		Header: account.Header,
+	}
+
+	a.logger.Info("Pre-Change Password:")
+	a.logger.Info("> Request:")
+	a.logger.Info(fmt.Sprintf("	POST -> %s", custom.URL))
+
+	preChangePassRs := a.CallX.Req(custom)
+
+	a.logger.Info("> Response:")
+	a.logger.Info(fmt.Sprintf("	Cookie %s", preChangePassRs.Cookies))
+
+	// Parse html string to dom
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(preChangePassRs.Data)))
+	if err != nil {
+		a.logger.Fatal("Error loading HTML:", err)
+	}
+
+	// Post-Change Password
+	form := url.Values{
+		"txtPassword": {config.OldPassword},
+		"txtNewPass":  {config.NewPassword},
+		"txtConfPass": {config.NewPassword},
+		"btnSubmit":   {"ตกลง"},
+	}
+
+	// Hidden input
+	hdnId, hdnIdExist := doc.Find("#hdnId").Attr("value")
+	if hdnIdExist {
+		form.Set("hdnId", hdnId)
+	}
+	for _, id := range hiddenIdList {
+		value, exists := doc.Find(fmt.Sprintf("#%s", id)).Attr("value")
+		if exists {
+			form.Set(id, value)
+		}
+	}
+	custom.Header["Content-Type"] = "application/x-www-form-urlencoded"
+
+	custom.Method = http.MethodPost
+	custom.Form = strings.NewReader(form.Encode())
+	data := a.CallX.Req(custom)
+	if data.Code == http.StatusOK {
+		return session, nil
+	}
+
+	return session, errors.New("cannot change password")
 }
 
 // GetProfileDaily
@@ -208,20 +281,8 @@ func (a *amrX) Auth(config Credential) (*Session, error) {
 	// Pre-Auth
 	custom := callx.Custom{
 		URL:    a.Config.BaseURL + "/Index.aspx",
-		Method: http.MethodPost,
-		Header: callx.Header{
-			"sec-ch-ua":                 "\"Chromium\";v=\"128\", \"Not;A=Brand\";v=\"24\", \"Google Chrome\";v=\"128\"",
-			"sec-ch-ua-mobile":          "?0",
-			"sec-ch-ua-platform":        "\"macOS\"",
-			"Upgrade-Insecure-Requests": "1",
-			"User-Agent":                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-			"Sec-Fetch-Site":            "same-origin",
-			"Sec-Fetch-Mode":            "navigate",
-			"Sec-Fetch-User":            "?1",
-			"Sec-Fetch-Dest":            "document",
-			"host":                      a.Config.Hostname(),
-			"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-		},
+		Method: http.MethodGet,
+		Header: Header(a.Config.Hostname()),
 	}
 
 	a.logger.Info("Pre-Auth:")
@@ -267,6 +328,7 @@ func (a *amrX) Auth(config Credential) (*Session, error) {
 	if len(match) > 1 {
 		custom.Header["Cookie"] = fmt.Sprintf("ASP.NET_SessionId=%s", match[1])
 	}
+	custom.Method = http.MethodPost
 	custom.Form = strings.NewReader(form.Encode())
 
 	a.logger.Info("Post-Auth:")
