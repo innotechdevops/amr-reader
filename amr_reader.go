@@ -37,6 +37,12 @@ type Credential struct {
 	Password string
 }
 
+type PasswordRotationCredential struct {
+	Username    string
+	OldPassword string
+	NewPassword string
+}
+
 func (c *Credential) Checksum() string {
 	sh := sha1.New()
 	sh.Write([]byte(c.Username + ":" + c.Password))
@@ -67,13 +73,13 @@ type ProfileMeter struct {
 type Session struct {
 	Header   callx.Header
 	Username string
-	Status   string
 }
 
 type AmrX interface {
 	Auth(config Credential) (*Session, error)
 	GetAccount(session Session) (*Account, error)
 	GetProfileDaily(acc Account, date string) (*ProfileMeter, error)
+	PasswordRotation(config PasswordRotationCredential, header *map[string]string) error
 }
 
 type amrX struct {
@@ -81,6 +87,35 @@ type amrX struct {
 	CallX   callx.CallX
 	session callx.Header
 	logger  Logger
+}
+
+func (a *amrX) PasswordRotation(config PasswordRotationCredential, header *map[string]string) error {
+	//TODO implement me
+	var account *Account
+	if header != nil {
+		acc, err := a.GetAccount(Session{
+			Header:   *header,
+			Username: config.Username,
+		})
+		if err != nil {
+			session, err := a.Auth(Credential{
+				Username: config.Username,
+				Password: config.OldPassword,
+			})
+			if err != nil {
+				return err
+			}
+			account, err = a.GetAccount(*session)
+			if err != nil {
+				return err
+			}
+		}
+		account = acc
+	}
+
+	fmt.Println(account)
+
+	return errors.New("implement me")
 }
 
 // GetProfileDaily
