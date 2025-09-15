@@ -79,7 +79,8 @@ type AmrX interface {
 	Auth(config Credential) (*Session, error)
 	GetAccount(session Session) (*Account, error)
 	GetProfileDaily(acc Account, date string) (*ProfileMeter, error)
-	PasswordRotation(config PasswordRotationCredential, header *map[string]string) (*Session, error)
+	PasswordRotation(config PasswordRotationCredential, header *callx.Header) (*Session, error)
+	Logout() error
 }
 
 type amrX struct {
@@ -100,12 +101,27 @@ func Header(hostname string) callx.Header {
 		"Sec-Fetch-Mode":            "navigate",
 		"Sec-Fetch-User":            "?1",
 		"Sec-Fetch-Dest":            "document",
+		"Connection":                "keep-alive",
+		"Host":                      hostname,
 		"host":                      hostname,
 		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
 	}
 }
 
-func (a *amrX) PasswordRotation(config PasswordRotationCredential, header *map[string]string) (*Session, error) {
+func (a *amrX) Logout() error {
+	custom := callx.Custom{
+		URL:    a.Config.BaseURL + "/Logout.aspx",
+		Method: http.MethodGet,
+		Header: Header(a.Config.Hostname()),
+	}
+	resp := a.CallX.Req(custom)
+	if resp.Code == http.StatusOK {
+		return nil
+	}
+	return errors.New(http.StatusText(resp.Code))
+}
+
+func (a *amrX) PasswordRotation(config PasswordRotationCredential, header *callx.Header) (*Session, error) {
 	var session *Session
 	var account *Account
 	if header != nil {
@@ -131,8 +147,6 @@ func (a *amrX) PasswordRotation(config PasswordRotationCredential, header *map[s
 			account = acc
 		}
 	}
-
-	fmt.Println(account)
 
 	// Pre-Change Password
 	query := map[string]string{
@@ -184,6 +198,8 @@ func (a *amrX) PasswordRotation(config PasswordRotationCredential, header *map[s
 	custom.Method = http.MethodPost
 	custom.Form = strings.NewReader(form.Encode())
 	data := a.CallX.Req(custom)
+
+	a.logger.Info("Change Password:", "code", data.Code)
 	if data.Code == http.StatusOK {
 		return session, nil
 	}
